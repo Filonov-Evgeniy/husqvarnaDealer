@@ -10,9 +10,11 @@ use CCatalogSku;
 use CFile;
 use CIBlockElement;
 use Husqvarna\Dealer\Source;
+use Bitrix\Main\Loader;
 
 class ProductRepository
 {
+    private const MAX_TRY_COUNT = 3;
     private readonly int $iBlockId;
     private readonly int $offerIBlockId;
     private readonly SectionRepository $sectionRepository;
@@ -34,9 +36,25 @@ class ProductRepository
         $existingProducts = $this->getExistingProductsMap($products);
         $sectionsMap = $this->sectionRepository->mapFromSource($source);
         $propertiesMap = $this->propertyRepository->mapFromSource($source);
-
         foreach ($products as $product) {
             if ($this->shouldUpdateProduct($product, $existingProducts)) {
+                Loader::includeModule('iblock');
+                $propertyValues = [];
+                if ($product['RELATIONS']) {
+                    foreach ($product['RELATIONS'] as $key => $relation) {
+                        if ($relation) {
+                            $propertyValues[$key] = $relation;
+                        }
+                    }
+                }
+
+                if (!empty($propertyValues)) {
+                    $propertyValues['ARTICLE'] = $product['ARTICLE'];
+                    $propertyValues['BARCODE'] = $product['ARTICLE'];
+
+                    $element = new \CIBlockElement();
+                    $element->Update($existingProducts[$product['ARTICLE']], ['PROPERTY_VALUES' => $propertyValues]);
+                }
                 continue;
             }
 
@@ -66,11 +84,48 @@ class ProductRepository
                     ...$props,
                 ];
             }
+            $element = new \CIBlockElement();
+            $productId = $element->Add($fields);
 
-            $productId = (new CIBlockElement)->Add($fields);
-            $this->addToCatalog($productId, $product['TYPE']);
+            if (!$productId) {
+                $symbolCode = s_url_code($product['NAME']);
+                for ($i = 0; $i < self::MAX_TRY_COUNT; $i++) {
+                    $symbolCode .= '-' . $i;
+                    $fields['CODE'] = $symbolCode;
+                    if ($productId = $element->Add($fields)) {
+                        break;
+                    }
+                }
+            }
 
-            $existingProducts[$product['ARTICLE']] = $productId;
+            if ($productId) {
+                $this->addToCatalog($productId, $product['TYPE']);
+                $existingProducts[$product['ARTICLE']] = $productId;
+                $this->changeProperties($product, $existingProducts);
+            } else {
+                file_put_contents(__DIR__ . '/' . __LINE__ . '.log', print_r($element->LAST_ERROR, true), FILE_APPEND);
+            }
+        }
+    }
+
+    private function changeProperties($product, $existingProducts)
+    {
+        Loader::includeModule('iblock');
+        $propertyValues = [];
+        if ($product['RELATIONS']) {
+            foreach ($product['RELATIONS'] as $key => $relation) {
+                if ($relation) {
+                    $propertyValues[$key] = $relation;
+                }
+            }
+        }
+
+        if (!empty($propertyValues)) {
+            $propertyValues['ARTICLE'] = $product['ARTICLE'];
+            $propertyValues['BARCODE'] = $product['ARTICLE'];
+
+            $element = new \CIBlockElement();
+            $element->Update($existingProducts[$product['ARTICLE']], ['PROPERTY_VALUES' => $propertyValues]);
         }
     }
 
