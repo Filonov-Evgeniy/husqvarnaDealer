@@ -15,7 +15,6 @@ use Bitrix\Main\Loader;
 
 class ProductRepository
 {
-    private const MAX_TRY_COUNT = 3;
     private readonly int $iBlockId;
     private readonly int $offerIBlockId;
     private readonly SectionRepository $sectionRepository;
