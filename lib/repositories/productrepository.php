@@ -3,6 +3,7 @@
 namespace Husqvarna\Dealer\Repositories;
 
 use Bitrix\Catalog\ProductTable;
+use Bitrix\Main\Application;
 use Bitrix\Iblock\ElementPropertyTable;
 use Bitrix\Iblock\PropertyTable;
 use Bitrix\Main\Entity\ReferenceField;
@@ -37,23 +38,14 @@ class ProductRepository
         $sectionsMap = $this->sectionRepository->mapFromSource($source);
         $propertiesMap = $this->propertyRepository->mapFromSource($source);
         foreach ($products as $product) {
+            set_time_limit(300);
+            $connection = Application::getConnection();
             if ($this->shouldUpdateProduct($product, $existingProducts)) {
-                Loader::includeModule('iblock');
-                $propertyValues = [];
-                if ($product['RELATIONS']) {
-                    foreach ($product['RELATIONS'] as $key => $relation) {
-                        if ($relation) {
-                            $propertyValues[$key] = $relation;
-                        }
-                    }
-                }
-
-                if (!empty($propertyValues)) {
-                    $propertyValues['ARTICLE'] = $product['ARTICLE'];
-                    $propertyValues['BARCODE'] = $product['ARTICLE'];
-
-                    $element = new \CIBlockElement();
-                    $element->Update($existingProducts[$product['ARTICLE']], ['PROPERTY_VALUES' => $propertyValues]);
+                $result = $this->changeProperties($product, $existingProducts);
+                if ($result) {
+                    $connection->commitTransaction();
+                } else {
+                    $connection->rollbackTransaction();
                 }
                 continue;
             }
@@ -89,21 +81,22 @@ class ProductRepository
 
             if (!$productId) {
                 $symbolCode = s_url_code($product['NAME']);
-                for ($i = 0; $i < self::MAX_TRY_COUNT; $i++) {
-                    $symbolCode .= '-' . $i;
-                    $fields['CODE'] = $symbolCode;
-                    if ($productId = $element->Add($fields)) {
-                        break;
-                    }
-                }
+                $fields['CODE'] = $symbolCode . "#" . $product['ARTICLE'];
+                $productId = $element->Add($fields);
             }
 
             if ($productId) {
                 $this->addToCatalog($productId, $product['TYPE']);
                 $existingProducts[$product['ARTICLE']] = $productId;
-                $this->changeProperties($product, $existingProducts);
+                $result = $this->changeProperties($product, $existingProducts);
+                if ($result) {
+                    $connection->commitTransaction();
+                } else {
+                    $connection->rollbackTransaction();
+                }
             } else {
-                file_put_contents(__DIR__ . '/' . __LINE__ . '.log', print_r($element->LAST_ERROR, true), FILE_APPEND);
+                $connection->rollbackTransaction();
+                throw new \Exception('Product not found');
             }
         }
     }
@@ -120,13 +113,17 @@ class ProductRepository
             }
         }
 
-        if (!empty($propertyValues)) {
-            $propertyValues['ARTICLE'] = $product['ARTICLE'];
-            $propertyValues['BARCODE'] = $product['ARTICLE'];
-
-            $element = new \CIBlockElement();
-            $element->Update($existingProducts[$product['ARTICLE']], ['PROPERTY_VALUES' => $propertyValues]);
+        if (empty($propertyValues)) {
+            return true;
         }
+
+        $propertyValues['ARTICLE'] = $product['ARTICLE'];
+        $propertyValues['BARCODE'] = $product['ARTICLE'];
+
+        $element = new \CIBlockElement();
+        $result = $element->Update($existingProducts[$product['ARTICLE']], ['PROPERTY_VALUES' => $propertyValues]);
+
+        return $result;
     }
 
     public function findProductsByArticles(array $articles): array
