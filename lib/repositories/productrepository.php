@@ -39,6 +39,7 @@ class ProductRepository
         foreach ($products as $product) {
             set_time_limit(300);
             $connection = Application::getConnection();
+            $connection->startTransaction();
             if ($this->shouldUpdateProduct($product, $existingProducts)) {
                 $result = $this->changeProperties($product, $existingProducts);
                 if ($result) {
