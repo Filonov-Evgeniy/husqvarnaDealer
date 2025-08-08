@@ -95,7 +95,6 @@ class ProductRepository
                 }
             } else {
                 $connection->rollbackTransaction();
-                throw new \Exception('Product not found');
             }
         }
     }
