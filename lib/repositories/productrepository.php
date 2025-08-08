@@ -3,6 +3,7 @@
 namespace Husqvarna\Dealer\Repositories;
 
 use Bitrix\Catalog\ProductTable;
+use Bitrix\Main\Application;
 use Bitrix\Iblock\ElementPropertyTable;
 use Bitrix\Iblock\PropertyTable;
 use Bitrix\Main\Entity\ReferenceField;
@@ -10,6 +11,7 @@ use CCatalogSku;
 use CFile;
 use CIBlockElement;
 use Husqvarna\Dealer\Source;
+use Bitrix\Main\Loader;
 
 class ProductRepository
 {
@@ -34,9 +36,17 @@ class ProductRepository
         $existingProducts = $this->getExistingProductsMap($products);
         $sectionsMap = $this->sectionRepository->mapFromSource($source);
         $propertiesMap = $this->propertyRepository->mapFromSource($source);
-
         foreach ($products as $product) {
+            set_time_limit(300);
+            $connection = Application::getConnection();
+            $connection->startTransaction();
             if ($this->shouldUpdateProduct($product, $existingProducts)) {
+                $result = $this->changeProperties($product, $existingProducts);
+                if ($result) {
+                    $connection->commitTransaction();
+                } else {
+                    $connection->rollbackTransaction();
+                }
                 continue;
             }
 
@@ -66,12 +76,53 @@ class ProductRepository
                     ...$props,
                 ];
             }
+            $element = new \CIBlockElement();
+            $productId = $element->Add($fields);
 
-            $productId = (new CIBlockElement)->Add($fields);
-            $this->addToCatalog($productId, $product['TYPE']);
+            if (!$productId) {
+                $symbolCode = s_url_code($product['NAME']);
+                $fields['CODE'] = $symbolCode . "#" . $product['ARTICLE'];
+                $productId = $element->Add($fields);
+            }
 
-            $existingProducts[$product['ARTICLE']] = $productId;
+            if ($productId) {
+                $this->addToCatalog($productId, $product['TYPE']);
+                $existingProducts[$product['ARTICLE']] = $productId;
+                $result = $this->changeProperties($product, $existingProducts);
+                if ($result) {
+                    $connection->commitTransaction();
+                } else {
+                    $connection->rollbackTransaction();
+                }
+            } else {
+                $connection->rollbackTransaction();
+            }
         }
+    }
+
+    private function changeProperties($product, $existingProducts)
+    {
+        Loader::includeModule('iblock');
+        $propertyValues = [];
+        if ($product['RELATIONS']) {
+            foreach ($product['RELATIONS'] as $key => $relation) {
+                if ($relation) {
+                    $propertyValues[$key] = $relation;
+                }
+            }
+        }
+
+        if (empty($propertyValues)) {
+            return true;
+        }
+
+        $propertyValues['ARTICLE'] = $product['ARTICLE'];
+        $propertyValues['BARCODE'] = $product['ARTICLE'];
+
+        $element = new \CIBlockElement();
+        $result = $element->Update($existingProducts[$product['ARTICLE']], ['PROPERTY_VALUES' => $propertyValues]);
+
+        return $result;
     }
 
     public function findProductsByArticles(array $articles): array
